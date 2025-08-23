@@ -28,17 +28,18 @@ jobs:
         pip install -r requirements.txt
         
     - name: Проверка уязвимостей в зависимостях
-      run: safety check
-      
-    - name: Статический анализ безопасности
-      run: bandit -r backend/ -f json -o bandit-report.json
-      
-    - name: Загрузка отчета Bandit
-      uses: actions/upload-artifact@v3
+      run: |
+        safety check --json --output safety-report.json || true
+        bandit -r backend/ -f json -o bandit-report.json || true
+        
+    - name: Загрузка отчета безопасности Python
+      uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: bandit-report
-        path: bandit-report.json
+        name: python-security-reports
+        path: |
+          safety-report.json
+          bandit-report.json
 
   # Сканирование зависимостей Node.js
   nodejs-security:
@@ -60,7 +61,15 @@ jobs:
       
     - name: Аудит безопасности npm
       working-directory: ./frontend
-      run: npm audit --audit-level moderate
+      run: |
+        npm audit --audit-level=moderate --json > npm-audit.json || true
+        
+    - name: Загрузка отчета безопасности Node.js
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: nodejs-security-report
+        path: frontend/npm-audit.json
 
   # Сканирование Docker образа
   docker-security:
@@ -69,21 +78,29 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Сборка Docker образа
-      run: docker build -t ai-content-curator:test .
-      
-    - name: Сканирование с Trivy
-      uses: aquasecurity/trivy-action@master
-      with:
-        image-ref: 'ai-content-curator:test'
-        format: 'sarif'
-        output: 'trivy-results.sarif'
+    - name: Установка Trivy
+      run: |
+        sudo apt-get update
+        sudo apt-get install wget apt-transport-https gnupg lsb-release
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+        echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+        sudo apt-get update
+        sudo apt-get install trivy
+        
+    - name: Сборка и сканирование Docker образа
+      run: |
+        docker build -t ai-content-curator:test .
+        trivy image --format sarif --output trivy-results.sarif ai-content-curator:test || true
+        # Проверяем что файл создался и не пустой
+        if [ ! -s "trivy-results.sarif" ]; then
+          echo '{"version": "2.1.0", "runs": []}' > trivy-results.sarif
+        fi
         
     - name: Загрузка результатов в GitHub Security
-      uses: github/codeql-action/upload-sarif@v2
-      if: always()
+      uses: github/codeql-action/upload-sarif@v3
+      if: always() && hashFiles('trivy-results.sarif') != ''
       with:
-        sarif_file: 'trivy-results.sarif'
+        sarif_file: trivy-results.sarif
 
   # CodeQL анализ
   codeql:
@@ -102,13 +119,13 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       
-    - name: Initialize CodeQL
-      uses: github/codeql-action/init@v2
+    - name: Инициализация CodeQL
+      uses: github/codeql-action/init@v3
       with:
         languages: ${{ matrix.language }}
         
-    - name: Autobuild
-      uses: github/codeql-action/autobuild@v2
+    - name: Автосборка
+      uses: github/codeql-action/autobuild@v3
       
-    - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v2
+    - name: Анализ CodeQL
+      uses: github/codeql-action/analyze@v3

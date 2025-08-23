@@ -50,6 +50,7 @@ CLAUDE.md
 .byterover-rules.md
 .byterover-knowledge.md
 .windsurf/
+.history/
 
 # OS
 .DS_Store
@@ -77,3 +78,6 @@ secrets/
 *.pem
 *.key
 config/secrets.json
+
+# GitHub
+.github/

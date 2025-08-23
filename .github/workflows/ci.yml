@@ -67,7 +67,7 @@ jobs:
         pytest backend/tests/ -v --cov=backend --cov-report=xml
         
     - name: Загрузка покрытия в Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         file: ./coverage.xml
 
@@ -169,7 +169,7 @@ jobs:
     if: always()
     
     steps:
-    - name: Уведомление в Telegram
+    - name: Уведомление в telegram
       if: ${{ secrets.TELEGRAM_CHAT_ID }}
       uses: appleboy/telegram-action@master
       with:
