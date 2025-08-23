@@ -1,0 +1,185 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # Тестирование бэкенда
+  backend-tests:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Настройка Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Кэширование зависимостей
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          
+    - name: Установка зависимостей
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov pytest-asyncio
+        
+    - name: Линтинг с flake8
+      run: |
+        flake8 backend/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 backend/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+        
+    - name: Форматирование с black
+      run: |
+        black --check backend/
+        
+    - name: Сортировка импортов с isort
+      run: |
+        isort --check-only backend/
+        
+    - name: Запуск тестов
+      env:
+        DATABASE_URL: sqlite:///./test.db
+        SECRET_KEY: test-secret-key
+        GEMINI_API_KEY: test-key
+      run: |
+        pytest backend/tests/ -v --cov=backend --cov-report=xml
+        
+    - name: Загрузка покрытия в Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+
+  # Тестирование фронтенда
+  frontend-tests:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Настройка Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+        
+    - name: Установка зависимостей
+      working-directory: ./frontend
+      run: npm ci
+      
+    - name: Линтинг
+      working-directory: ./frontend
+      run: npm run lint
+      
+    - name: Сборка
+      working-directory: ./frontend
+      run: npm run build
+      
+    - name: Запуск тестов
+      working-directory: ./frontend
+      run: npm run test:unit
+
+  # Сборка Docker образа
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend-tests]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Настройка Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Логин в Docker Hub
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+        
+    - name: Извлечение метаданных
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ secrets.DOCKER_USERNAME }}/ai-content-curator
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha
+          
+    - name: Сборка и пуш
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  # Деплой (только для main ветки)
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Деплой на сервер
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.HOST }}
+        username: ${{ secrets.USERNAME }}
+        key: ${{ secrets.SSH_KEY }}
+        script: |
+          cd /opt/ai-content-curator
+          git pull origin main
+          docker-compose pull
+          docker-compose up -d --remove-orphans
+          docker image prune -f
+
+  # Уведомления
+  notify:
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    if: always()
+    
+    steps:
+    - name: Уведомление в Telegram
+      if: ${{ secrets.TELEGRAM_CHAT_ID }}
+      uses: appleboy/telegram-action@master
+      with:
+        to: ${{ secrets.TELEGRAM_CHAT_ID }}
+        token: ${{ secrets.TELEGRAM_NOTIFICATION_TOKEN }}
+        message: |
+          🚀 AI Content Curator деплой завершен!
+          
+          Коммит: ${{ github.sha }}
+          Автор: ${{ github.actor }}
+          Статус: ${{ job.status }}
+          
+          🌐 https://your-domain.com

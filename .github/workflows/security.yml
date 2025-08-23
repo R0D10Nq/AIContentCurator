@@ -1,0 +1,114 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 2 * * 1'  # Каждый понедельник в 2:00
+
+jobs:
+  # Сканирование зависимостей Python
+  python-security:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Настройка Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Установка зависимостей
+      run: |
+        python -m pip install --upgrade pip
+        pip install safety bandit
+        pip install -r requirements.txt
+        
+    - name: Проверка уязвимостей в зависимостях
+      run: safety check
+      
+    - name: Статический анализ безопасности
+      run: bandit -r backend/ -f json -o bandit-report.json
+      
+    - name: Загрузка отчета Bandit
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: bandit-report
+        path: bandit-report.json
+
+  # Сканирование зависимостей Node.js
+  nodejs-security:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Настройка Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+        
+    - name: Установка зависимостей
+      working-directory: ./frontend
+      run: npm ci
+      
+    - name: Аудит безопасности npm
+      working-directory: ./frontend
+      run: npm audit --audit-level moderate
+
+  # Сканирование Docker образа
+  docker-security:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Сборка Docker образа
+      run: docker build -t ai-content-curator:test .
+      
+    - name: Сканирование с Trivy
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'ai-content-curator:test'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        
+    - name: Загрузка результатов в GitHub Security
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  # CodeQL анализ
+  codeql:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+      
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'python', 'javascript' ]
+        
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v2
+      with:
+        languages: ${{ matrix.language }}
+        
+    - name: Autobuild
+      uses: github/codeql-action/autobuild@v2
+      
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v2
