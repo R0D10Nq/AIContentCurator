@@ -123,7 +123,7 @@ jobs:
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: ${{ secrets.DOCKER_USERNAME }}/ai-content-curator
+        images: ${{ secrets.DOCKER_USERNAME || 'user' }}/ai-content-curator
         tags: |
           type=ref,event=branch
           type=ref,event=pr
@@ -170,7 +170,6 @@ jobs:
     
     steps:
     - name: Уведомление в telegram
-      if: ${{ secrets.TELEGRAM_CHAT_ID }}
       uses: appleboy/telegram-action@master
       with:
         to: ${{ secrets.TELEGRAM_CHAT_ID }}
